@@ -5,6 +5,8 @@
 This code handles the hardware unit of Pegasus Vehicle
 
 Message protocol = key:value,key:value,key:value....#           //# defines end of message
+Max Digital Speed 0-255
+Steer Angle is 0-40 degrees each side ( Right 50-90, Left, 90-130)
 
 */
 
@@ -43,30 +45,33 @@ const String VALUE_DRIVING_BACKWARD = "B";
 
 
 
-const int MIN_DIGITAL_SPEED = 0;          //min digital speed value
-const int MAX_DIGITAL_SPEED = 255;         //MAx digital speed value
+const int MIN_DIGITAL_SPEED = 0;			//MIN digital speed value
+const int MAX_DIGITAL_SPEED = 255;			//MAx digital speed value
 
+const int STRAIGHT_STEER_ANGLE = 90;			//MAX steer angle value
+const int MIN_STEER_ANGLE = 50;				 //MIN steer angle value
+const int MAX_STEER_ANGLE = 130;			//MAX steer angle value
+const int String_Buffer = 100;				//number of bytes to reserve
 
-String mInputMessage = "";                //keeps incoming messages from Raspberry Pi
-boolean mReceivedEntireMessage = false;    //whether the string is complete
-int mStringBuffer = 100;                  //number of bytes to reserve
-boolean mIsServerReady = false;            //Indicates whether the Raspberry pi is ready for communication
-double mCurrentteeringAngle;           // keep the current steering angle
-int mLastDigitalSpeed;                //keep last digital speed
-double mLastSteeringAngle;           //keep last steering angle
+String mInputMessage = "";					//keeps incoming messages from Raspberry Pi
+boolean mReceivedEntireMessage = false;		//whether the string is complete
+boolean mIsServerReady = false;				//indicates whether the Raspberry pi is ready for communication
+double mCurrentteeringAngle;				//keep the current steering angle
+int mLastDigitalSpeed;						//keep last digital speed
+double mLastSteeringAngle;					//keep last steering angle
 
 
 
 void setup(){
 
-	Serial.begin(115200);  //turn the serial protocol on
+	Serial.begin(115200);					//turn the serial protocol on
 	while (!Serial);
-	mInputMessage.reserve(mStringBuffer);
+	mInputMessage.reserve(String_Buffer);
 	Serial.println("ready#");
 
-	mSteerMotor.attach(9);        //attach motor on the shiled
-	mBackMotor.run(RELEASE);      //reset back motor
-	mBackMotor.run(FORWARD);      //reset To Forward direction by default
+	mSteerMotor.attach(9);					//attach motor on the shiled
+	mBackMotor.run(RELEASE);				//reset back motor
+	mBackMotor.run(FORWARD);				//reset To Forward direction by default
 	mInputMessage = "AT:1,SD:R,RA:90";
 	handleMessage(mInputMessage);
 
@@ -151,8 +156,7 @@ void handleMessage(String msgFromRaspberry){
 			switch (actionTypeValue){
 			case  ACTION_DRIVING_DIRECTION:
 			{
-				mBackMotor.run(RELEASE);							//reset back motor
-
+				handleDirections(msgToHandle);
 				break;
 			}
 			case ACTION_BACK_MOTOR:
@@ -186,7 +190,6 @@ void handleMessage(String msgFromRaspberry){
 String getValue(char *msg, const char *key){
 	char *buffer = new char[strlen(msg) + 1];						//allocate buffer to backup msg
 	char *relevant = strcpy(buffer, msg);							//copy original msg to buffer
-	Serial.println(key);
 	relevant = strstr(relevant, key);                               //find the key
 	if (isNullOrEmpty(relevant))
 		return "";
@@ -237,6 +240,17 @@ boolean isNumber(String msg){
 	}
 }
 
+/*
+	Method handles direction changing
+*/
+void handleDirections(char *msgToHandle){
+	String direction = getValue(msgToHandle, KEY_DRIVING_DIRECTION);
+	mBackMotor.run(RELEASE);							//reset back motor
+	if (direction.compareTo(VALUE_DRIVING_FORWARD) == 0)
+		mBackMotor.run(FORWARD);
+	else if (direction.compareTo(VALUE_DRIVING_BACKWARD) == 0)
+		mBackMotor.run(BACKWARD);
+}
 
 /**
 * Method handles actions for back motor
@@ -287,11 +301,20 @@ void changeBackMotorSpeed(int digitalSpeed){
 }
 
 
-
+/*
+	turning right, from 0-40 degrees to 50-90
+*/
 void turnSteeringRight(double angle){
+	mSteerMotor.write(STRAIGHT_STEER_ANGLE - angle);		
+	delay(15);
 }
 
+/*
+turning left, from 0-40 degrees to 90-130
+*/
 void turnSteeringLeft(double angle){
+	mSteerMotor.write(STRAIGHT_STEER_ANGLE + angle);		//from 0-40 degrees to 90-130
+	delay(15);
 }
 
 

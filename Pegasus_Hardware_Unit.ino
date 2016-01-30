@@ -112,6 +112,7 @@ void setup(){
 		Motors
 	*/
 	mSteerMotor.attach(9);					//attach motor on the shiled
+	mSteerMotor.write(STRAIGHT_STEER_ANGLE);	//reset servo
 	mBackMotor.run(RELEASE);				//reset back motor
 	mBackMotor.run(FORWARD);				//reset To Forward direction by default
 	
@@ -125,10 +126,11 @@ void setup(){
 	Serial.println(mSystemInitialStatus);	//send message to logic unit
 
 	//Testing
-	/*mInputMessage = "AT:1,SD:R,RA:90";
+	
+	mInputMessage = "MT:2000,VA:1,DS:200";
 	handleMessage(mInputMessage);
 
-	mInputMessage = "AT:1,SD:L,RA:90";
+	/*mInputMessage = "AT:1,SD:L,RA:90";
 	handleMessage(mInputMessage);*/
 	
 }
@@ -161,6 +163,7 @@ void loop(){
 		//clear data
 		mInputMessage = "";
 		mReceivedEntireMessage = false;
+		
 	}
 
 }
@@ -342,7 +345,8 @@ void handleBackMotor(char * msgToHandle){
 	if (!isNullOrEmpty(sd) && isNumber(sd))
 	{
 		int digitalSpeed = sd.toInt();
-		if (MIN_DIGITAL_SPEED <= digitalSpeed && digitalSpeed <= MAX_DIGITAL_SPEED){
+		if (MIN_DIGITAL_SPEED <= digitalSpeed && digitalSpeed <= MAX_DIGITAL_SPEED
+			&& digitalSpeed != mLastDigitalSpeed){
 			mLastDigitalSpeed = digitalSpeed;
 			changeBackMotorSpeed(mLastDigitalSpeed);
 		}
@@ -363,6 +367,7 @@ void handleSteerMotor(char * msgToHandle){
 			rotationAngle.toCharArray(ra, len + 1);
 			double angle = atof(ra);
 			delete[] ra;
+			
 			if (direction.compareTo(VALUE_STEERING_RIGHT) == 0)
 				turnSteeringRight(angle);
 			else if (direction.compareTo(VALUE_STEERING_LEFT) == 0)
@@ -387,16 +392,22 @@ void changeBackMotorSpeed(int digitalSpeed){
 	turning right, from 0-40 degrees to 50-90
 */
 void turnSteeringRight(double angle){
-	mSteerMotor.write(STRAIGHT_STEER_ANGLE - angle);		
-	delay(15);
+	if (mLastSteeringAngle != angle){
+		mLastSteeringAngle = angle;
+		mSteerMotor.write(STRAIGHT_STEER_ANGLE - angle);
+		delay(15);
+	}
 }
 
 /*
 turning left, from 0-40 degrees to 90-130
 */
 void turnSteeringLeft(double angle){
-	mSteerMotor.write(STRAIGHT_STEER_ANGLE + angle);		//from 0-40 degrees to 90-130
-	delay(15);
+	if (mLastSteeringAngle != angle){
+		mLastSteeringAngle = angle;
+		mSteerMotor.write(STRAIGHT_STEER_ANGLE + angle);		//from 0-40 degrees to 90-130
+		delay(15);
+	}
 }
 
 

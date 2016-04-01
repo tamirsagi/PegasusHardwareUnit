@@ -7,7 +7,8 @@ This code handles the hardware unit of Pegasus Vehicle
 Message protocol = key:value,key:value,key:value....#           //# defines end of message
 Max Digital Speed 0-255
 Steer Angle is 0-40 degrees each side ( Right 50-90, Left, 90-130)
-
+There are 7 ultra sonic sensors on the vehicle which are handled here in array called "sonar".
+the system is waiting for handshake and sends echo every 5 seconds until handshake is done.
 */
 
 #include <AFMotor.h>
@@ -41,7 +42,7 @@ NewPing sonar[NUMBER_OF_ULTRA_SONIC_SENSORS] = { NewPing(sensors_triger_digital_
 											     NewPing(sensors_triger_digital_pins[5], sensors_echo_digital_pins[5], MAX_DISTANCE),
 											     NewPing(sensors_triger_digital_pins[6], sensors_echo_digital_pins[6], MAX_DISTANCE) 
 											  };
-bool sensorState[NUMBER_OF_ULTRA_SONIC_SENSORS] = { false, false, false, false, false, false, false };
+bool sensorStatesArray[NUMBER_OF_ULTRA_SONIC_SENSORS] = { false, false, false, false, false, false, false };
 unsigned int uS = 0;
 
 /////////////// Motors \\\\\\\\\\\\\\\\\\\\\
@@ -82,7 +83,6 @@ const String VALUE_DRIVING_BACKWARD = "B";			//B = Backward, driving backward
 //Sensors
 const char *KEY_SENSOR_ID = "SID";					//Sensor ID
 const char *KEY_SENSOR_STATE = "SS";				//Sensor State
-const int VALUE_CHANGE_SENSOR_STATE = 0;
 const int VALUE_CHANGE_SENSOR_STATE_DISABLE = 0;
 const int VALUE_CHANGE_SENSOR_STATE_ENABLE = 1;
 
@@ -135,7 +135,8 @@ double mLastSteeringAngle;						//keep last steering angle
 String mSystemInitialStatus = "";				//keep initiate status of the system , we send this string to logic unit
 
 int elapsedTime = 0;
-
+int measure = 0;
+int lastMeasure = 0;
 //////////////////////////////////////////////////////////////////////////////////////////////////////
 // Interrupt Service Routine (ISR)
 void revolution()
@@ -170,6 +171,26 @@ void setup(){
         + String(KEY_STATUS) + MESSAGE_KEY_VALUE_SAPERATOR + VALUE_HARDWARE_STATUS_READY
         + END_MESSAGE;
 
+
+	/*mSystemInitialStatus = "MT:2000, VA : 3, SID : 1, SS : 1";
+	Serial.println("Before");
+	for (int i = 0; i < 7; i++){
+		Serial.print("Sensor ");
+		Serial.print(i + 1);
+		Serial.print(sensorStatesArray[i]);
+		Serial.println();
+	}
+	sendUltraSonicSensorData();
+	handleMessage(mSystemInitialStatus);
+	Serial.println("after");
+	for (int i = 0; i < 7; i++){
+		Serial.print("Sensor ");
+		Serial.print(i + 1);
+		Serial.print(":");
+		Serial.print(sensorStatesArray[i]);
+		Serial.println();
+	}
+	sendUltraSonicSensorData();*/
 }
 
 void loop(){
@@ -183,18 +204,21 @@ void loop(){
 		mInputMessage = "";
 		mReceivedEntireMessage = false;
 	}
-
+	lastMeasure = millis();
     /*
         wait for handshake, we send status and wait 3 seconds
      */
     if (!mIsLogicUnitReady){
         Serial.println(mSystemInitialStatus);	//send message to logic unit
-        delay(3000);	//sleep 3 seconds
+        delay(5000);	//sleep 5 seconds
     }
-	else{	//system is working
-		sendUltraSonicSensorData();
-		sendTachometerData();
-	}
+
+	else if (lastMeasure - measure > 1000){//system is working we send measurements every 1 sec
+			measure = lastMeasure;
+			sendUltraSonicSensorData();
+			//sendTachometerData();
+		}
+		
 
 	//// scan from 0 to 180 degrees
 	//for (int angle = 50; angle <= 130; angle++)
@@ -275,7 +299,6 @@ Serial Event occurs whenever a new data comes in the hardware Serial. this routi
 time loop() runs.
 */
 void serialEvent(){
-
     if (Serial.available()){
         delay(100);
         char temp[] = " ";
@@ -290,25 +313,15 @@ void serialEvent(){
                 //check if its the end of the message
                 if (temp[0] == END_MESSAGE && mInputMessage.length() > 0){
                     mReceivedEntireMessage = true;
-                    Serial.println(mInputMessage);
                     procceed = false;
                 }
                 else
                     mInputMessage += temp;
             }
-
         }
     }
 }
 
-
-
-
-
-/*
-
-Methods create array of sensors
-*/
 
 
 /*
@@ -324,15 +337,12 @@ String systemCheckUp(){
 }
 
 
-
-
-
-
 /**
 * Method will parse the message and call relevant methods
 * The Message is in format MessageType(Vehicle_Action, Info,....), params,params...
 */
 void handleMessage(String msgFromRaspberry){
+	Serial.println(msgFromRaspberry);
     if (!isNullOrEmpty(msgFromRaspberry)){
         int len = msgFromRaspberry.length() + 1;						// + 1 to keep eos '\0' char
         char* msgToHandle = new char[len];
@@ -384,6 +394,9 @@ String getValue(char *msg, const char *key){
 }
 
 
+/*
+	handles info messages
+*/
 void handleInfoMessage(char* msgToHandle){
 
     String infoType = getValue(msgToHandle, KEY_INFO_TYPE);		//get Value
@@ -398,7 +411,6 @@ void handleInfoMessage(char* msgToHandle){
             }
         }
     }
-
 }
 
 /*
@@ -425,9 +437,9 @@ void handleAction(char* msgToHandle){
 				break;
 			}
 			case ACTION_CHANGE_SENSOR_STATE:
+				Serial.println("here");
 				handleSensorStateChanged(msgToHandle);
 				break;
-
         }
     }
 
@@ -454,8 +466,11 @@ boolean isNumber(String msg){
     int len = msg.length();
     if (len > 0){
         int dotsCounter = 0;
-        for (int i = 0; i < len; i++){
-            if (msg[i] == '.' && i > 0)
+		if (msg[0] == '.'){
+			return false;
+		}
+        for (int i = 1; i < len; i++){
+            if (msg[i] == '.')
                 dotsCounter++;
             else if ('0' >= msg[i] && msg[i] >= '9')
                 return false;
@@ -538,7 +553,7 @@ void handleSensorStateChanged(char* msgToHandle){
 		!isNullOrEmpty(sensorState) && isNumber(sensorState)){
 		int id = sensorId.toInt();
 		int state = sensorState.toInt();
-		sensorState[id - 1] = state;
+		sensorStatesArray[id - 1] = state;
 	}
 }
 
@@ -547,7 +562,7 @@ void handleSensorStateChanged(char* msgToHandle){
 */
 void sendUltraSonicSensorData(){
 	for (int i = 0; i < NUMBER_OF_ULTRA_SONIC_SENSORS; i++){
-		if (sensorState[i]){	//sensor is enable and should send data
+		if (sensorStatesArray[i]){	//sensor is enable and should send data
 			int uS = sonar[i].ping();
 			int dist = uS / US_ROUNDTRIP_CM;
 			String sensorDataMsg = START_MESSAGE
@@ -557,7 +572,6 @@ void sendUltraSonicSensorData(){
 				+ String(KEY_SENSOR_DATA) + MESSAGE_KEY_VALUE_SAPERATOR + dist
 				+ END_MESSAGE;
 			Serial.println(sensorDataMsg);
-			delay(50);
 		}
 	}
 }
@@ -580,7 +594,6 @@ void sendTachometerData(){
 			+ String(KEY_SENSOR_DATA) + MESSAGE_KEY_VALUE_SAPERATOR + rps
 			+ END_MESSAGE;
 		Serial.println(sensorDataMsg);
-		delay(50);
 		previous_time = current_time;
 		revolution_count = 0;
 	}

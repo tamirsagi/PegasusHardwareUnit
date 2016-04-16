@@ -35,13 +35,14 @@ const int NUMBER_OF_ULTRA_SONIC_SENSORS = 7;
 const int sensors_ids[NUMBER_OF_ULTRA_SONIC_SENSORS] = { 1, 2, 3, 4, 5, 6, 7 };
 const int sensors_triger_digital_pins[NUMBER_OF_ULTRA_SONIC_SENSORS] = { 34, 36, 46, 44, 42, 40, 38 };
 const int sensors_echo_digital_pins[NUMBER_OF_ULTRA_SONIC_SENSORS] = { 35, 37,47, 45, 43, 41, 39 };
-NewPing sonar[NUMBER_OF_ULTRA_SONIC_SENSORS] = { NewPing(sensors_triger_digital_pins[0], sensors_echo_digital_pins[0], MAX_DISTANCE),
-											     NewPing(sensors_triger_digital_pins[1], sensors_echo_digital_pins[1], MAX_DISTANCE),
-											     NewPing(sensors_triger_digital_pins[2], sensors_echo_digital_pins[2], MAX_DISTANCE),
-											     NewPing(sensors_triger_digital_pins[3], sensors_echo_digital_pins[3], MAX_DISTANCE),
-											     NewPing(sensors_triger_digital_pins[4], sensors_echo_digital_pins[4], MAX_DISTANCE),
-											     NewPing(sensors_triger_digital_pins[5], sensors_echo_digital_pins[5], MAX_DISTANCE),
-											     NewPing(sensors_triger_digital_pins[6], sensors_echo_digital_pins[6], MAX_DISTANCE) 
+const int sensors_max_distance[NUMBER_OF_ULTRA_SONIC_SENSORS] = { 32, 24, 24, 32, 32, 24, 24 };
+NewPing sonar[NUMBER_OF_ULTRA_SONIC_SENSORS] = { NewPing(sensors_triger_digital_pins[0], sensors_echo_digital_pins[0], sensors_max_distance[0]),
+												 NewPing(sensors_triger_digital_pins[1], sensors_echo_digital_pins[1], sensors_max_distance[1]),
+												 NewPing(sensors_triger_digital_pins[2], sensors_echo_digital_pins[2], sensors_max_distance[2]),
+												 NewPing(sensors_triger_digital_pins[3], sensors_echo_digital_pins[3], sensors_max_distance[3]),
+												 NewPing(sensors_triger_digital_pins[4], sensors_echo_digital_pins[4], sensors_max_distance[4]),
+												 NewPing(sensors_triger_digital_pins[5], sensors_echo_digital_pins[5], sensors_max_distance[5]),
+												 NewPing(sensors_triger_digital_pins[6], sensors_echo_digital_pins[6], sensors_max_distance[6])
 											  };
 bool sensorStatesArray[NUMBER_OF_ULTRA_SONIC_SENSORS] = { false, false, false, false, false, false, false };
 int sensors_last_values[NUMBER_OF_ULTRA_SONIC_SENSORS] = { -1, -1, -1, -1, -1, -1, -1 };
@@ -69,7 +70,7 @@ const char MESSAGE_KEY_VALUE_SAPERATOR = ':';
 const char *KEY_MESSAGE_TYPE = "MT";				 // MT = Message Type
 const int VALUE_MESSAGE_TYPE_INFO = 1000;			 //INFO
 const int VALUE_MESSAGE_TYPE_ACTION = 2000;			 //ACTION
-const int VALUE_MESSAGE_TYPE_SETTINGS = 3000;		//Settings
+const int VALUE_MESSAGE_TYPE_SETTINGS = 3000;		 //Settings
 const int VALUE_MESSAGE_TYPE_ERROR = 4000;			 //ERROR
 const char *KEY_INFO_TYPE = "IT";					 //IT = Info Type key
 
@@ -84,7 +85,7 @@ const char *KEY_STEERING_DIRECTION = "SD";			// Steering Direction key
 const char *KEY_DRIVING_DIRECTION = "DD";			//Driving Direction key
 
 const char *KEY_SETTINGS_ACTION_TYPE = "ST";		//Settings Type key
-const char *KEY_PREFIX_ULTRA_SONIC_SENSOR = "S";		//Settings Type key
+const String KEY_PREFIX_ULTRA_SONIC_SENSOR = "S";	//Settings Type key
 
 const String VALUE_STEERING_NONE = "N";				//N = None, no steering
 const String VALUE_STEERING_RIGHT = "R";			//R = Right,  Right Steering
@@ -224,9 +225,6 @@ void serialEvent(){
             else if (procceed){
                 //check if its the end of the message
                 if (temp[0] == END_MESSAGE && mInputMessage.length() > 0){
-					Serial.println("message received from pi start");
-					Serial.println(mInputMessage);
-					Serial.println("finish");
 					handleMessage(mInputMessage);
 					mInputMessage = "";
                     procceed = false;
@@ -371,7 +369,7 @@ void handleSettings(char* msgToHandle){
 		int actionTypeValue = actionType.toInt();							//return Action type
 		switch (actionTypeValue){
 		case SETTINGS_SET_SENSORS:
-			setSensors(msgToHandle);
+			//setSensors(msgToHandle);
 			break;
 		}
 	}
@@ -415,20 +413,21 @@ boolean isNumber(String msg){
 }
 
 /*
-set sensor max distance
+DEPERECATED - Did not work well
+set sensor max distance 
 */
 void setSensors(char* sensorData){
+	char* relevantKEy = NULL;
 	for (int i = 0; i < NUMBER_OF_ULTRA_SONIC_SENSORS; i++){
-		String key = String(KEY_PREFIX_ULTRA_SONIC_SENSOR) + (i + 1);
+		String key = KEY_PREFIX_ULTRA_SONIC_SENSOR + (i + 1);
 		int len = key.length() + 1;											// + 1 to keep eos '\0' char
-		char* relevantKEy = new char[len];
+		relevantKEy = new char[len];
 		key.toCharArray(relevantKEy, len);									//convert the String to char[] in order to use strtok
 		String sensorMaxDistance = getValue(sensorData, relevantKEy);		//get Value
 		if (!isNullOrEmpty(sensorMaxDistance) && isNumber(sensorMaxDistance)){
 			int maxDistance = sensorMaxDistance.toInt();
 			sonar[i] = NewPing(sensors_triger_digital_pins[i], sensors_echo_digital_pins[i], maxDistance);
 		}
-		delete[] relevantKEy;
 	}
 }
 
@@ -509,7 +508,7 @@ void handleSensorStateChanged(char* msgToHandle){
 	Message send sensor Data
 */
 void sendUltraSonicSensorData(){
-	us_sensors_current_time = tachometer_current_time = millis();
+	us_sensors_current_time = millis();
 	if (us_sensors_current_time - us_sensors_previous_time >= US_INTERVAL_TIME){
 		for (int i = 0; i < NUMBER_OF_ULTRA_SONIC_SENSORS; i++){
 			if (sensorStatesArray[i]){	//sensor is enable and should send data

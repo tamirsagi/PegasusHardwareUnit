@@ -2,7 +2,11 @@
 * PEGASUS HARDWARE UNIT
 *
 @author - Tamir Sagi, 2015 - 2016.
-This code handles the hardware unit of Pegasus Vehicle
+This code handles the hardware unit of Pegasus Vehicle:
+X1 DC Motor
+X1 Servo Motor
+X7 Ultra Sonic Sensors
+X2 IR Sensor (port 18, 19)
 
 Message protocol = key:value,key:value,key:value....#           //# defines end of message
 Max Digital Speed 0-255
@@ -11,25 +15,30 @@ There are 7 ultra sonic sensors on the vehicle which are handled here in array c
 the system is waiting for handshake and sends echo every 5 seconds until handshake is done.
 */
 
-#include <AFMotor.h>
 #include <Servo.h>
 #include <NewPing\NewPing.h>
+#include <Math.h>
 
 
 ///////////////// Tachometer \\\\\\\\\\\\\\
 
-const int tachometer_interupt_port = 18;
-volatile boolean revolution_occured = false;
-unsigned int revolution_count = 0;
+const int TACHOMETER_INTERVAL_TIME = 1 * 150;
 unsigned long tachometer_current_time = 0;
 unsigned long tachometer_previous_time = 0;
 unsigned int rps = 0;
 const int wheelSlots = 5;
-int lastValue = -1;
+const int FACTOR_TACHOMETER_AVG = 2;  //divide by 2 as an avarage between 2 sensors and another division by 2 is for RISING Mode interrupt
+//Tachometer 1
+const int tachometer_interupt_port_1 = 18;
+unsigned int revolution_count_1 = 0;
+//Tachometer 2
+const int tachometer_interupt_port_2 = 19;
+unsigned int revolution_count_2 = 0;
 
 
 ////////////// Ultra Sonic Sensors \\\\\\\\\\\\\\
 
+const int US_INTERVAL_TIME = 1 * 150;				//Measure sensors every 0.5 sec
 const int  MAX_DISTANCE = 60;
 const int NUMBER_OF_ULTRA_SONIC_SENSORS = 7;
 const int sensors_ids[NUMBER_OF_ULTRA_SONIC_SENSORS] = { 1, 2, 3, 4, 5, 6, 7 };
@@ -50,11 +59,23 @@ unsigned int uS = 0;
 unsigned long us_sensors_current_time = 0;
 unsigned long us_sensors_previous_time = 0;
 
-/////////////// Motors \\\\\\\\\\\\\\\\\\\\\
+///////////////  Motors \\\\\\\\\\\\\\\\\\\\\
 
-AF_DCMotor mBackMotor(4, MOTOR34_64KHZ);
+/////DC \\\\
+
+#define BREAK 0
+#define FORWARD 1
+#define BACKWARD 2
+
+const int PWMPin = 3;  // Timer2
+int pinMotorInputA = 6; //A
+int pinMotorInputB = 7; //B
+const int DECREASE_SPEED_INTERVAL = 15;
+const int DECREASE_SPEED_DELAY = 20;
+
+/// Servo \\\
+
 Servo mSteerMotor;
-
 
 //////////////////////////////////////////////////////////////////
 /*
@@ -66,14 +87,12 @@ const char END_MESSAGE = '#';						//end of message
 const char MESSAGE_SAPERATOR = ',';				   //message saparator , part of the messaging protocol
 const char MESSAGE_KEY_VALUE_SAPERATOR = ':';
 
-
 const char *KEY_MESSAGE_TYPE = "MT";				 // MT = Message Type
 const int VALUE_MESSAGE_TYPE_INFO = 1000;			 //INFO
 const int VALUE_MESSAGE_TYPE_ACTION = 2000;			 //ACTION
 const int VALUE_MESSAGE_TYPE_SETTINGS = 3000;		 //Settings
 const int VALUE_MESSAGE_TYPE_ERROR = 4000;			 //ERROR
 const char *KEY_INFO_TYPE = "IT";					 //IT = Info Type key
-
 
 /*
 Incoming
@@ -134,12 +153,18 @@ const int SETTINGS_SET_SENSORS = 3001;
 
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////
+
+//Booting up first time
+const int BOOTING_UP_INTERVAL = 20 * 1000 * 1;			//one minute inerval until it start working
+unsigned int currentTime = 0;
+unsigned int timePassedSinceBooted = 0;
+
 const int UPDATE_INTERVAL = 60 * 1000 * 2;		   // 2 minutes update interval
-const int MIN_DIGITAL_SPEED = 0;				  //MIN digital speed value
+const int MIN_DIGITAL_SPEED = 0;				  //MIN digital speed value to start driving
 const int MAX_DIGITAL_SPEED = 255;				 //MAx digital speed value
 const int STRAIGHT_STEER_ANGLE = 90;			//MAX steer angle value
-const int MIN_STEER_ANGLE = 50;					//MIN steer angle value
-const int MAX_STEER_ANGLE = 130;				//MAX steer angle value
+const int MIN_SERVO_STEER_ANGLE = 50;			//MIN steer angle value
+const int MAX_SERVO_STEER_ANGLE = 130;			//MAX steer angle value
 
 String mInputMessage = "";						//keeps incoming messages from Raspberry Pi
 boolean mIsLogicUnitReady = false;				//indicates whether the Raspberry pi is ready for communication
@@ -149,62 +174,74 @@ int mCurrentDrivingDirection;                   //Keep Last Driving direction (F
 double mLastSteeringAngle;						//keep last steering angle
 String mSystemInitialStatus = "";				//keep initiate status of the system , we send this string to logic unit
 
-const int TACHOMETER_INTERVAL_TIME = 1 * 200;		//Measure sensors every 0.2 sec
-const int US_INTERVAL_TIME = 1 * 500;				//Measure sensors every 0.5 sec
 
-bool isStopped = true;
+bool isStopped = true;	
+
 //////////////////////////////////////////////////////////////////////////////////////////////////////
 // Interrupt Service Routine (ISR)
-void revolution()
+void revolution_tachometer_1()
 {
 	if (!isStopped){
-		revolution_count++;
+		revolution_count_1++;
+	}
+}
+
+void revolution_tachometer_2()
+{
+	if (!isStopped){
+		revolution_count_2++;
 	}
 }
 
 void setup(){
 
-    /*  Tachometer  */
-    pinMode(tachometer_interupt_port, INPUT);
-    attachInterrupt(digitalPinToInterrupt(tachometer_interupt_port), revolution, RISING);  // attach interrupt handler
+	/*  Tachometer  1 */
+	pinMode(tachometer_interupt_port_1, INPUT);
+	attachInterrupt(digitalPinToInterrupt(tachometer_interupt_port_1), revolution_tachometer_1, CHANGE);  // attach interrupt handler
+	//pinMode(tachometer_interupt_port_2, INPUT);
+	//attachInterrupt(digitalPinToInterrupt(tachometer_interupt_port_2), revolution_tachometer_2, RISING);  // attach interrupt handler
 
-    /* Serial Port */
-    Serial.begin(115200);						//turn the serial protocol on
-    while (!Serial);							//Wait for Serial
+	/* Serial Port */
+	Serial.begin(115200);						//turn the serial protocol on
+	while (!Serial);							//Wait for Serial
 
-    /*
-    Motors
-    */
-    mSteerMotor.attach(9);				//attach motor on the shiled
-    mSteerMotor.write(STRAIGHT_STEER_ANGLE);		//from 0-40 degrees to 90-130
-    mLastSteeringAngle = STRAIGHT_STEER_ANGLE;
-    mBackMotor.run(RELEASE);				//reset back motor
-    mBackMotor.run(FORWARD);				//reset To Forward direction by default
-    mCurrentDrivingDirection = FORWARD;
+	/*
+	Motors
+	*/
+	pinMode(pinMotorInputA, OUTPUT);
+	pinMode(pinMotorInputB, OUTPUT);
+	pinMode(PWMPin, OUTPUT);
+	setPwmFrequency(PWMPin, 8);  // change Timer2 divisor to 8 gives 3.9kHz PWM freq
+	
+	mCurrentDrivingDirection = FORWARD;
+	handleDirectionPin(mCurrentDrivingDirection);
 
-    // Build up the status message
-    mSystemInitialStatus += START_MESSAGE
-        + String(KEY_MESSAGE_TYPE) + MESSAGE_KEY_VALUE_SAPERATOR + VALUE_MESSAGE_TYPE_INFO + MESSAGE_SAPERATOR
-        + String(KEY_INFO_TYPE) + MESSAGE_KEY_VALUE_SAPERATOR + VALUE_STATUS + MESSAGE_SAPERATOR
-        + String(KEY_STATUS) + MESSAGE_KEY_VALUE_SAPERATOR + VALUE_HARDWARE_STATUS_READY
-        + END_MESSAGE;
+	mSteerMotor.attach(9);				//attach motor on the shiled
+	mSteerMotor.write(STRAIGHT_STEER_ANGLE - 2);	
 
+	// Build up the status message
+	mSystemInitialStatus += START_MESSAGE
+		+ String(KEY_MESSAGE_TYPE) + MESSAGE_KEY_VALUE_SAPERATOR + VALUE_MESSAGE_TYPE_INFO + MESSAGE_SAPERATOR
+		+ String(KEY_INFO_TYPE) + MESSAGE_KEY_VALUE_SAPERATOR + VALUE_STATUS + MESSAGE_SAPERATOR
+		+ String(KEY_STATUS) + MESSAGE_KEY_VALUE_SAPERATOR + VALUE_HARDWARE_STATUS_READY
+		+ END_MESSAGE;
 
+	//when first booted up after baord had been rebooted, wait for the logic unit prior sending data
+	delay(BOOTING_UP_INTERVAL);
 
 }
 
 void loop(){
-
-
+	readFromSerial();
 	//   wait for handshake, we send status and wait 3 seconds
     if (!mIsLogicUnitReady){
         Serial.println(mSystemInitialStatus);	//send message to logic unit
-        delay(5000);	//sleep 5 seconds
-    }
+        delay(1000);	//sleep 1 seconds
+    }	
 	else{		//system is working we send measurements every 1 sec
-			sendUltraSonicSensorData();
-			sendTachometerData();
-		}
+		sendTachometerData();
+		sendSensorsData();
+	}
 }
 
 
@@ -213,29 +250,118 @@ Serial Event occurs whenever a new data comes in the hardware Serial. this routi
 time loop() runs.
 */
 void serialEvent(){
-    if (Serial.available()){
-        delay(100);
-        char temp[] = " ";
-        boolean procceed = false;
-        while (Serial.available()){
-            //read one byte
-            temp[0] = Serial.read();
-            if (mInputMessage.length() == 0 && temp[0] == START_MESSAGE)
-                procceed = true;
-            else if (procceed){
-                //check if its the end of the message
-                if (temp[0] == END_MESSAGE && mInputMessage.length() > 0){
-					handleMessage(mInputMessage);
-					mInputMessage = "";
-                    procceed = false;
-                }
-                else
-                    mInputMessage += temp;
-            }
-        }
-    }
+	//if (Serial.available()){
+	//	char temp[] = " ";
+	//	boolean procceed = false;
+	//	while (Serial.available()){
+	//		//read one byte
+	//		temp[0] = Serial.read();
+	//		if (mInputMessage.length() == 0 && temp[0] == START_MESSAGE)
+	//			procceed = true;
+	//		else if (procceed){
+	//			//check if its the end of the message
+	//			if (temp[0] == END_MESSAGE && mInputMessage.length() > 0){
+	//				handleMessage(mInputMessage);
+	//				mInputMessage = "";
+	//				procceed = false;
+	//			}
+	//			else
+	//				mInputMessage += temp;
+	//		}
+	//	}
+	//}
 }
 
+void readFromSerial(){
+	if (Serial.available()){
+		delay(20);
+		char temp[] = " ";
+		boolean procceed = false;
+		while (Serial.available()){
+			//read one byte
+			temp[0] = Serial.read();
+			if (mInputMessage.length() == 0 && temp[0] == START_MESSAGE)
+				procceed = true;
+			else if (procceed){
+				//check if its the end of the message
+				if (temp[0] == END_MESSAGE && mInputMessage.length() > 0){
+					handleMessage(mInputMessage);
+					mInputMessage = "";
+					procceed = false;
+				}
+				else
+					mInputMessage += temp;
+			}
+		}
+	}
+}
+
+/**
+*
+* Divides a given PWM pin frequency by a divisor.
+*
+* The resulting frequency is equal to the base frequency divided by
+* the given divisor :
+*-Base frequencies :
+*o The base frequency for pins 3, 9, 10, and 11 is 31250 Hz.
+*      o The base frequency for pins 5 and 6 is 62500 Hz.
+*   -Divisors :
+*o The divisors available on pins 5, 6, 9 and 10 are : 1, 8, 64,
+*256, and 1024.
+*      o The divisors available on pins 3 and 11 are : 1, 8, 32, 64,
+*128, 256, and 1024.
+*
+* PWM frequencies are tied together in pairs of pins.If one in a
+* pair is changed, the other is also changed to match :
+*-Pins 5 and 6 are paired(Timer0)
+*   -Pins 9 and 10 are paired(Timer1) //servos
+*   -Pins 3 and 11 are paired(Timer2) // DC motor
+*
+* Note that this function will have side effects on anything else
+* that uses timers :
+*-Changes on pins 5, 6 may cause the delay() and
+*     millis() functions to stop working.Other timing - related
+*     functions may also be affected.
+*   -Changes on pins 9 or 10 will cause the Servo library to function
+*     incorrectly.
+*
+* Thanks to macegr of the Arduino forums for his documentation of the
+* PWM frequency divisors.His post can be viewed at :
+*http ://www.arduino.cc/cgi-bin/yabb2/YaBB.pl?num=1235060559/0#4
+*/
+
+void setPwmFrequency(int pin, int divisor) {
+	byte mode;
+	if (pin == 5 || pin == 6 || pin == 9 || pin == 10) { // Timer0 or Timer1
+		switch (divisor) {
+		case 1: mode = 0x01; break;
+		case 8: mode = 0x02; break;
+		case 64: mode = 0x03; break;
+		case 256: mode = 0x04; break;
+		case 1024: mode = 0x05; break;
+		default: return;
+		}
+		if (pin == 5 || pin == 6) {
+			TCCR0B = TCCR0B & 0xf8 | mode; // Timer0
+		}
+		else {
+			TCCR1B = TCCR1B & 0xf8 | mode; // Timer1
+		}
+	}
+	else if (pin == 3 || pin == 11) {
+		switch (divisor) {
+		case 1: mode = 0x01; break;
+		case 8: mode = 0x02; break;
+		case 32: mode = 0x03; break;
+		case 64: mode = 0x04; break;
+		case 128: mode = 0x05; break;
+		case 256: mode = 0x06; break;
+		case 1024: mode = 0x7; break;
+		default: return;
+		}
+		TCCR2B = TCCR2B & 0xf8 | mode; // Timer2
+	}
+}
 
 
 /*
@@ -282,7 +408,6 @@ void handleMessage(String msgFromRaspberry){
 					break;
 
             }//end of switch
-
         }
         delete[] msgToHandle;										//free allocation
     }
@@ -464,29 +589,12 @@ void handleSteerMotor(char * msgToHandle){
             char* ra = new char[len + 1];
             rotationAngle.toCharArray(ra, len + 1);
             double angle = atof(ra);
-			mLastSteeringAngle = angle;
             delete[] ra;
             if (direction.compareTo(VALUE_STEERING_RIGHT) == 0)
                 turnSteeringRight(angle);
             else if (direction.compareTo(VALUE_STEERING_LEFT) == 0)
                 turnSteeringLeft(angle);
         }
-    }
-}
-
-
-/*
-Method handles direction changing
-*/
-void handleDirections(char *msgToHandle){
-    String direction = getValue(msgToHandle, KEY_DRIVING_DIRECTION);
-    mBackMotor.run(RELEASE);							//reset back motor
-    if (direction.compareTo(VALUE_DRIVING_FORWARD) == 0) {
-        mCurrentDrivingDirection = FORWARD;
-        mBackMotor.run(FORWARD);
-    }else if (direction.compareTo(VALUE_DRIVING_BACKWARD) == 0){
-        mCurrentDrivingDirection = BACKWARD;
-        mBackMotor.run(BACKWARD);
     }
 }
 
@@ -507,49 +615,90 @@ void handleSensorStateChanged(char* msgToHandle){
 /*
 	Message send sensor Data
 */
-void sendUltraSonicSensorData(){
+void sendSensorsData(){
 	us_sensors_current_time = millis();
 	if (us_sensors_current_time - us_sensors_previous_time >= US_INTERVAL_TIME){
+		boolean toSend = false;
+		String sensorDataMsg = START_MESSAGE + String(KEY_MESSAGE_TYPE) + MESSAGE_KEY_VALUE_SAPERATOR + VALUE_MESSAGE_TYPE_INFO + MESSAGE_SAPERATOR
+			+ String(KEY_INFO_TYPE) + MESSAGE_KEY_VALUE_SAPERATOR + VALUE_SENSOR_DATA ;
 		for (int i = 0; i < NUMBER_OF_ULTRA_SONIC_SENSORS; i++){
 			if (sensorStatesArray[i]){	//sensor is enable and should send data
 				int uS = sonar[i].ping();
 				int dist = uS / US_ROUNDTRIP_CM;
 				if (sensors_last_values[i] != dist){
+					toSend = true;
 					sensors_last_values[i] = dist;
-					String sensorDataMsg = START_MESSAGE
-						+ String(KEY_MESSAGE_TYPE) + MESSAGE_KEY_VALUE_SAPERATOR + VALUE_MESSAGE_TYPE_INFO + MESSAGE_SAPERATOR
-						+ String(KEY_INFO_TYPE) + MESSAGE_KEY_VALUE_SAPERATOR + VALUE_SENSOR_DATA + MESSAGE_SAPERATOR
-						+ String(KEY_SENSOR_ID) + MESSAGE_KEY_VALUE_SAPERATOR + sensors_ids[i] + MESSAGE_SAPERATOR
-						+ String(KEY_SENSOR_DATA) + MESSAGE_KEY_VALUE_SAPERATOR + dist
-						+ END_MESSAGE;
-					Serial.println(sensorDataMsg);
+					sensorDataMsg += MESSAGE_SAPERATOR 
+						+ (String(KEY_SENSOR_ID) + MESSAGE_KEY_VALUE_SAPERATOR + sensors_ids[i]) + MESSAGE_SAPERATOR
+						+ String(KEY_SENSOR_DATA) + MESSAGE_KEY_VALUE_SAPERATOR + dist;
 				}
 			}
+		}
+		if (toSend){
+			sensorDataMsg += END_MESSAGE;
+			Serial.println(sensorDataMsg);
 		}
 		us_sensors_previous_time = us_sensors_current_time;
 	}
 }
 
-/*
-	mesaure RPM and send data
-*/
+///*
+//	mesaure RPM and send data
+
 void sendTachometerData(){
 	tachometer_current_time = millis();
-	if (tachometer_current_time - tachometer_previous_time >= TACHOMETER_INTERVAL_TIME && revolution_count > 0) {
-		rps = (revolution_count / wheelSlots);		
+	if (tachometer_current_time - tachometer_previous_time >= TACHOMETER_INTERVAL_TIME &&		
+		(revolution_count_1 > 0)) { 
+		//rps = (revolution_count / wheelSlots);
+		rps = (revolution_count_1) / FACTOR_TACHOMETER_AVG;
 		String sensorDataMsg = START_MESSAGE
 			+ String(KEY_MESSAGE_TYPE) + MESSAGE_KEY_VALUE_SAPERATOR + VALUE_MESSAGE_TYPE_INFO + MESSAGE_SAPERATOR
 			+ String(KEY_INFO_TYPE) + MESSAGE_KEY_VALUE_SAPERATOR + VALUE_SENSOR_DATA + MESSAGE_SAPERATOR
-			+ String(KEY_SENSOR_ID) + MESSAGE_KEY_VALUE_SAPERATOR + tachometer_interupt_port + MESSAGE_SAPERATOR
+			+ String(KEY_SENSOR_ID) + MESSAGE_KEY_VALUE_SAPERATOR + tachometer_interupt_port_1 + "_" + tachometer_interupt_port_2 + MESSAGE_SAPERATOR
 			+ String(KEY_SENSOR_DATA) + MESSAGE_KEY_VALUE_SAPERATOR + rps
 			+ END_MESSAGE;
 		Serial.println(sensorDataMsg);
 		tachometer_previous_time = tachometer_current_time;
-		revolution_count = 0;
+		revolution_count_1 = 0;
+		revolution_count_2 = 0;
 	}
+}
 
+/*
+	set driver input for direction ( 00 break, 01, forward, 10 - backward)
+*/
+void handleDirectionPin(int aValue){
+	switch (aValue){
+	case BREAK:
+		mLastDigitalSpeed = 0;
+		digitalWrite(pinMotorInputA, 0);
+		digitalWrite(pinMotorInputB, 0);
+		break;
+	case FORWARD:
+		digitalWrite(pinMotorInputA, 0);
+		digitalWrite(pinMotorInputB, 1);
+		break;
+	case BACKWARD:
+		digitalWrite(pinMotorInputA, 1);
+		digitalWrite(pinMotorInputB, 0);
+		break;
+	}
+}
 
-
+/*
+Method handles direction changing
+*/
+void handleDirections(char *msgToHandle){
+	String direction = getValue(msgToHandle, KEY_DRIVING_DIRECTION);
+	handleDirectionPin(BREAK);					//reset back motor
+	if (direction.compareTo(VALUE_DRIVING_FORWARD) == 0) {
+		mCurrentDrivingDirection = FORWARD;
+		handleDirectionPin(FORWARD);
+	}
+	else if (direction.compareTo(VALUE_DRIVING_BACKWARD) == 0){
+		mCurrentDrivingDirection = BACKWARD;
+		handleDirectionPin(BACKWARD);
+	}
 }
 
 /*
@@ -558,14 +707,13 @@ void sendTachometerData(){
 void changeBackMotorSpeed(int digitalSpeed){
 	isStopped = digitalSpeed == 0;
 	if (isStopped){
-		mBackMotor.run(RELEASE);
+		handleDirectionPin(BREAK);
 	}
     else
     {
-        mBackMotor.run(mCurrentDrivingDirection);
-        mBackMotor.setSpeed(digitalSpeed);
+		handleDirectionPin(mCurrentDrivingDirection);
+		analogWrite(PWMPin, digitalSpeed);
     }
-	
 }
 
 
@@ -573,13 +721,21 @@ void changeBackMotorSpeed(int digitalSpeed){
 turning right, from 0-40 degrees to 50-90
 */
 void turnSteeringRight(double angle){
-    mSteerMotor.write(STRAIGHT_STEER_ANGLE - angle);
+	if (mLastSteeringAngle - angle <= STRAIGHT_STEER_ANGLE){
+		mSteerMotor.write(STRAIGHT_STEER_ANGLE);
+	}
+	mLastSteeringAngle = STRAIGHT_STEER_ANGLE - angle;
+	mSteerMotor.write(mLastSteeringAngle);
 }
 
 /*
 turning left, from 0-40 degrees to 90-130
 */
 void turnSteeringLeft(double angle){
-    mSteerMotor.write(STRAIGHT_STEER_ANGLE + angle);		//from 0-40 degrees to 90-130
+	if (mLastSteeringAngle + angle >= STRAIGHT_STEER_ANGLE){
+		mSteerMotor.write(STRAIGHT_STEER_ANGLE);
+	}
+	mLastSteeringAngle = STRAIGHT_STEER_ANGLE + angle;
+	mSteerMotor.write(mLastSteeringAngle);		//from 0-40 degrees to 90-130
 }
 
